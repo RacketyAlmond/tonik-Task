@@ -33,6 +33,7 @@ type PublicPlayer = {
 };
 
 type ServerState = {
+    mode: "sentences";
     round: RoundState;
     players: PublicPlayer[];
     serverNow: number;
@@ -40,10 +41,10 @@ type ServerState = {
 
 function getOrCreatePlayerId() {
     const key = "typingrace.playerId";
-    const existing = localStorage.getItem(key);
+    const existing = sessionStorage.getItem(key);
     if (existing) return existing;
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(key, id);
+    sessionStorage.setItem(key, id);
     return id;
 }
 
@@ -102,7 +103,7 @@ export default function Page() {
         const pid = getOrCreatePlayerId();
         playerIdRef.current = pid;
 
-        socketRef.current?.emit("join", { playerId: pid, name: n });
+        socketRef.current?.emit("join", { playerId: pid, name: n, mode: "sentences" });
     };
 
     const sendProgressDebounceRef = useRef<number | null>(null);
@@ -165,12 +166,21 @@ export default function Page() {
             <header className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
                     <h1 className="text-2xl font-semibold tracking-tight">Typing Race</h1>
-                    <p className="text-sm text-muted-foreground">Realtime sentence rounds</p>
+                    <p className="text-sm text-muted-foreground">Mode: Sentences</p>
                 </div>
                 <Badge variant={roundBadgeVariant}>
                     Round ends in {formatSeconds(timeLeftMs)}
                 </Badge>
             </header>
+
+            <Card>
+                <CardHeader className="space-y-1">
+                    <CardTitle className="text-base">Switch mode</CardTitle>
+                    <CardDescription>
+                        <a className="underline" href="/words">Go to Words</a>
+                    </CardDescription>
+                </CardHeader>
+            </Card>
 
             {!joined ? (
                 <Card>
@@ -220,7 +230,7 @@ export default function Page() {
                 <CardHeader className="flex flex-row items-start justify-between gap-4">
                     <div>
                         <CardTitle className="text-base">Players</CardTitle>
-                        <CardDescription>Live progress, WPM and accuracy</CardDescription>
+                        <CardDescription>Only users in sentences mode are shown.</CardDescription>
                     </div>
                     <div className="text-right text-sm text-muted-foreground">
                         Round: {(state?.round.roundIndex ?? 0) + 1}
