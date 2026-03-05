@@ -16,11 +16,10 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import Link from "next/link";
 
 type WordsRound = {
     roundId: string;
-    words: [string, string, string];
+    wordIds: number[];
     roundStartedAt: number;
     roundEndsAt: number;
     roundIndex: number;
@@ -34,6 +33,10 @@ type PublicWordsPlayer = {
     accuracy: number;
     correctWords: number;
     committedWords: number;
+    cursor: number;
+    current: string;
+    next: string;
+    next2: string;
 };
 
 type ServerState = {
@@ -56,6 +59,7 @@ export default function WordsPage() {
     const [name, setName] = useState("You");
     const [joined, setJoined] = useState(false);
     const [playerId, setPlayerId] = useState<string | null>(null);
+
     const [typed, setTyped] = useState("");
     const [state, setState] = useState<ServerState | null>(null);
 
@@ -63,64 +67,54 @@ export default function WordsPage() {
     const lastRoundIdRef = useRef<string | null>(null);
 
     useEffect(() => {
-        const socket = io("http://localhost:3002", {
-            transports: ["websocket", "polling"],
-        });
+        const s = io("http://localhost:3002", { transports: ["websocket", "polling"] });
+        socketRef.current = s;
 
-        socketRef.current = socket;
-
-        socket.on("state", (next: ServerState) => {
+        s.on("state", (next: ServerState) => {
             setState(next);
 
             if (lastRoundIdRef.current && lastRoundIdRef.current !== next.round.roundId) {
                 setTyped("");
             }
-
             lastRoundIdRef.current = next.round.roundId;
         });
 
         return () => {
-            socket.disconnect();
+            s.disconnect();
             socketRef.current = null;
         };
     }, []);
 
     const join = () => {
         const trimmed = name.trim();
-        if (!trimmed || !socketRef.current) return;
+        const s = socketRef.current;
+        if (!trimmed || !s) return;
 
         const pid = getOrCreatePlayerId();
-
         setPlayerId(pid);
         setName(trimmed);
         setJoined(true);
 
-        socketRef.current.emit(
-            "join",
-            { playerId: pid, name: trimmed, mode: "words" },
-            (snap: ServerState) => setState(snap)
-        );
+        s.emit("join", { playerId: pid, name: trimmed, mode: "words" }, (snap: ServerState) => {
+            setState(snap);
+            lastRoundIdRef.current = snap?.round?.roundId ?? null;
+            setTyped("");
+        });
     };
 
     const sendProgress = (value: string) => {
         setTyped(value);
-
-        if (!joined || !socketRef.current) return;
-
-        socketRef.current.emit("progress", { typed: value });
+        const s = socketRef.current;
+        if (!joined || !s) return;
+        s.emit("progress", { typed: value });
     };
 
     const commitWord = () => {
-        if (!joined || !socketRef.current) return;
-
-        socketRef.current.emit("commit");
+        const s = socketRef.current;
+        if (!joined || !s) return;
+        s.emit("commit");
         setTyped("");
     };
-
-    const words = state?.round.words ?? ["", "", ""] as [string, string, string];
-    const current = words[0] ?? "";
-    const next = words[1] ?? "";
-    const next2 = words[2] ?? "";
 
     const now = state?.serverNow ?? 0;
     const roundEndsAt = state?.round.roundEndsAt ?? 0;
@@ -131,6 +125,10 @@ export default function WordsPage() {
     const me = useMemo(() => {
         return players.find((p) => p.id === playerId) ?? null;
     }, [players, playerId]);
+
+    const current = me?.current ?? "";
+    const next = me?.next ?? "";
+    const next2 = me?.next2 ?? "";
 
     return (
         <main className="mx-auto max-w-4xl p-6 space-y-6" suppressHydrationWarning>
@@ -146,9 +144,7 @@ export default function WordsPage() {
                 <CardHeader className="space-y-1">
                     <CardTitle className="text-base">Switch mode</CardTitle>
                     <CardDescription>
-                        <Link className="underline" href="/">
-                            Go to Sentences
-                        </Link>
+                        <a className="underline" href="/">Go to Sentences</a>
                     </CardDescription>
                 </CardHeader>
             </Card>
@@ -245,35 +241,6 @@ export default function WordsPage() {
                     </Table>
                 </CardContent>
             </Card>
-
-            {me && (
-                <Card>
-                    <CardHeader className="space-y-1">
-                        <CardTitle className="text-base">Your stats</CardTitle>
-                        <CardDescription>Current round performance</CardDescription>
-                    </CardHeader>
-                    <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                        <div className="rounded-md border p-4">
-                            <div className="text-xs text-muted-foreground">WPM</div>
-                            <div className="text-2xl font-semibold">{Math.round(me.wpm)}</div>
-                        </div>
-                        <div className="rounded-md border p-4">
-                            <div className="text-xs text-muted-foreground">Accuracy</div>
-                            <div className="text-2xl font-semibold">
-                                {(me.accuracy * 100).toFixed(0)}%
-                            </div>
-                        </div>
-                        <div className="rounded-md border p-4">
-                            <div className="text-xs text-muted-foreground">Correct words</div>
-                            <div className="text-2xl font-semibold">{me.correctWords}</div>
-                        </div>
-                        <div className="rounded-md border p-4">
-                            <div className="text-xs text-muted-foreground">Committed words</div>
-                            <div className="text-2xl font-semibold">{me.committedWords}</div>
-                        </div>
-                    </CardContent>
-                </Card>
-            )}
         </main>
     );
 }

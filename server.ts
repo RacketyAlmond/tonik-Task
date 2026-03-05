@@ -2,7 +2,7 @@ import http from "http";
 import { Server } from "socket.io";
 import { pickSentence } from "./app/lib/game/sentences";
 import { scoreRound } from "./app/lib/game/scoring";
-import { countCorrectCharsForWord, generateWordQueue, randomWord } from "./app/lib/game/words";
+import { WORDS, countCorrectCharsForWord } from "./app/lib/game/words";
 
 type Mode = "sentences" | "words";
 
@@ -16,7 +16,7 @@ type SentencesRoundState = {
 
 type WordsRoundState = {
     roundId: string;
-    words: [string, string, string];
+    wordIds: number[];
     roundStartedAt: number;
     roundEndsAt: number;
     roundIndex: number;
@@ -33,6 +33,7 @@ type WordsPlayer = {
     id: string;
     name: string;
     typed: string;
+    cursor: number;
     correctWords: number;
     committedWords: number;
     correctChars: number;
@@ -56,6 +57,10 @@ type PublicWordsPlayer = {
     accuracy: number;
     correctWords: number;
     committedWords: number;
+    cursor: number;
+    current: string;
+    next: string;
+    next2: string;
 };
 
 const PORT = Number(process.env.SOCKET_PORT ?? 3002);
@@ -124,9 +129,7 @@ class SentencesGame {
             roundEndsAt: now + ROUND_MS,
             roundIndex: nextIndex,
         };
-        for (const p of this.players.values()) {
-            p.typed = "";
-        }
+        for (const p of this.players.values()) p.typed = "";
     }
 
     shouldRotate(now: number) {
@@ -166,15 +169,33 @@ class WordsGame {
 
     constructor() {
         const now = Date.now();
-        const q = generateWordQueue(3) as [string, string, string];
         this.round = {
             roundId: uid(),
-            words: q,
+            wordIds: this.generateWordIds(120),
             roundStartedAt: now,
             roundEndsAt: now + ROUND_MS,
             roundIndex: 0,
         };
         this.players = new Map();
+    }
+
+    generateWordIds(count: number) {
+        const ids: number[] = [];
+        const n = WORDS.length;
+        const take = Math.max(3, count);
+        for (let i = 0; i < take; i++) {
+            ids.push(Math.floor(Math.random() * n));
+        }
+        return ids;
+    }
+
+    wordAt(cursor: number) {
+        const ids = this.round.wordIds;
+        const n = ids.length;
+        if (n === 0) return "";
+        const safe = Math.max(0, cursor);
+        const id = ids[safe % n] ?? 0;
+        return WORDS[id] ?? "";
     }
 
     ensurePlayer(id: string, name: string) {
@@ -189,6 +210,7 @@ class WordsGame {
             id,
             name: name || "Player",
             typed: "",
+            cursor: 0,
             correctWords: 0,
             committedWords: 0,
             correctChars: 0,
@@ -214,7 +236,7 @@ class WordsGame {
         const p = this.players.get(id);
         if (!p) return;
 
-        const target = (this.round.words[0] ?? "").toLowerCase();
+        const target = this.wordAt(p.cursor).toLowerCase();
         const typedWord = p.typed.trim().toLowerCase();
 
         const total = target.length;
@@ -226,26 +248,22 @@ class WordsGame {
         if (typedWord === target) p.correctWords += 1;
 
         p.typed = "";
-
-        const next1 = this.round.words[1];
-        const next2 = this.round.words[2];
-        const next3 = randomWord();
-        this.round.words = [next1, next2, next3];
+        p.cursor += 1;
     }
 
     nextRound() {
         const now = Date.now();
         const nextIndex = this.round.roundIndex + 1;
-        const q = generateWordQueue(3) as [string, string, string];
         this.round = {
             roundId: uid(),
-            words: q,
+            wordIds: this.generateWordIds(120),
             roundStartedAt: now,
             roundEndsAt: now + ROUND_MS,
             roundIndex: nextIndex,
         };
         for (const p of this.players.values()) {
             p.typed = "";
+            p.cursor = 0;
             p.correctWords = 0;
             p.committedWords = 0;
             p.correctChars = 0;
@@ -275,6 +293,10 @@ class WordsGame {
                 accuracy: clamp01(accuracy),
                 correctWords: p.correctWords,
                 committedWords: p.committedWords,
+                cursor: p.cursor,
+                current: this.wordAt(p.cursor),
+                next: this.wordAt(p.cursor + 1),
+                next2: this.wordAt(p.cursor + 2),
             });
         }
         players.sort((a, b) => b.wpm - a.wpm);
@@ -296,10 +318,7 @@ const httpServer = http.createServer((_, res) => {
 });
 
 const io = new Server(httpServer, {
-    cors: {
-        origin: true,
-        credentials: true,
-    },
+    cors: { origin: true, credentials: true },
 });
 
 io.on("connection", (socket) => {
