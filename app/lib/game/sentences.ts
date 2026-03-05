@@ -14,6 +14,5 @@ export const SENTENCES: string[] = [
 ];
 
 export function pickSentence(roundIndex: number): string {
-    // Deterministic cycle so reviewers get consistent behavior
     return SENTENCES[roundIndex % SENTENCES.length]!;
 }

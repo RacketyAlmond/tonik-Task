@@ -1,209 +1,182 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { io, type Socket } from "socket.io-client";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import Countdown from "@/app/atoms/Countdown";
-import GameCard from "@/app/molecules/GameCard";
-import HistoryTables, { type RoundSummary } from "@/app/atoms/HistoryTables";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { countCorrectCharsForWord, generateWordQueue } from "@/app/lib/game/words";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+    Table,
+    TableBody,
+    TableCaption,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/ui/table";
 
-const ROUND_MS = 30_000;
+type RoundState = {
+    roundId: string;
+    sentence: string;
+    roundStartedAt: number;
+    roundEndsAt: number;
+    roundIndex: number;
+};
 
-function clamp01(n: number) {
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(1, n));
+type PublicPlayer = {
+    id: string;
+    name: string;
+    liveProgress: string;
+    wpm: number;
+    accuracy: number;
+};
+
+type ServerState = {
+    round: RoundState;
+    players: PublicPlayer[];
+    serverNow: number;
+};
+
+function getOrCreatePlayerId() {
+    const key = "typingrace.playerId";
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(key, id);
+    return id;
 }
 
-function newId() {
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+function formatSeconds(ms: number) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return `${s}s`;
 }
 
 export default function Page() {
-    const [now, setNow] = useState(0);
-
-    const [joined, setJoined] = useState(false);
     const [name, setName] = useState("You");
+    const [joined, setJoined] = useState(false);
 
-    const [roundIndex, setRoundIndex] = useState(0);
-    const [roundStartedAt, setRoundStartedAt] = useState(0);
-    const [roundEndsAt, setRoundEndsAt] = useState(0);
-
-    const [queue, setQueue] = useState<string[]>([]);
     const [typed, setTyped] = useState("");
+    const [state, setState] = useState<ServerState | null>(null);
 
-    const [correctWords, setCorrectWords] = useState(0);
-    const [completedWords, setCompletedWords] = useState(0);
-    const [correctness, setCorrectness] = useState(1);
+    const [fallbackNow, setFallbackNow] = useState(0);
 
-    const [totalChars, setTotalChars] = useState(0);
-    const [correctChars, setCorrectChars] = useState(0);
-    const [accuracy, setAccuracy] = useState(1);
+    const socketRef = useRef<Socket | null>(null);
+    const playerIdRef = useRef<string | null>(null);
+    const lastRoundIdRef = useRef<string | null>(null);
 
-    const [wpm, setWpm] = useState(0);
-    const [history, setHistory] = useState<RoundSummary[]>([]);
-
-    const initializedRef = useRef(false);
+    const serverNow = state?.serverNow;
+    useEffect(() => {
+        setFallbackNow(Date.now());
+    }, [serverNow]);
 
     useEffect(() => {
-        const id = window.setInterval(() => {
-            queueMicrotask(() => setNow(Date.now()));
-        }, 100);
-        return () => window.clearInterval(id);
-    }, []);
-
-    useEffect(() => {
-        if (initializedRef.current) return;
-        initializedRef.current = true;
-
-        const t = Date.now();
-        queueMicrotask(() => {
-            setNow(t);
-            setRoundStartedAt(t);
-            setRoundEndsAt(t + ROUND_MS);
-            setQueue(generateWordQueue(3));
-        });
-    }, []);
-
-    const current = useMemo(() => queue[0] ?? "", [queue]);
-    const next = useMemo(() => queue[1] ?? "", [queue]);
-    const next2 = useMemo(() => queue[2] ?? "", [queue]);
-
-    const computeWpm = useCallback(
-        (nextCorrectWords: number, at: number) => {
-            const elapsedMsRaw = at - roundStartedAt;
-            const elapsedMs = Math.max(3_000, elapsedMsRaw);
-            const minutes = elapsedMs / 60_000;
-            return minutes > 0 ? nextCorrectWords / minutes : 0;
-        },
-        [roundStartedAt]
-    );
-
-    const resetRound = useCallback((nextRoundIndex: number) => {
-        const t = Date.now();
-        setRoundIndex(nextRoundIndex);
-        setRoundStartedAt(t);
-        setRoundEndsAt(t + ROUND_MS);
-        setQueue(generateWordQueue(3));
-        setTyped("");
-        setCorrectWords(0);
-        setCompletedWords(0);
-        setCorrectness(1);
-        setTotalChars(0);
-        setCorrectChars(0);
-        setAccuracy(1);
-        setWpm(0);
-    }, []);
-
-    const buildSummary = useCallback(
-        (finalAt: number): RoundSummary => {
-            const cw = correctWords;
-            const comp = completedWords;
-            const tc = totalChars;
-            const cc = correctChars;
-
-            return {
-                id: newId(),
-                roundNumber: roundIndex + 1,
-                name,
-                correctWords: cw,
-                completedWords: comp,
-                correctness: clamp01(comp === 0 ? 1 : cw / comp),
-                accuracy: clamp01(tc === 0 ? 1 : cc / tc),
-                wpm: computeWpm(cw, finalAt),
-            };
-        },
-        [correctWords, completedWords, totalChars, correctChars, roundIndex, name, computeWpm]
-    );
-
-    useEffect(() => {
-        if (!joined) return;
-        if (roundEndsAt === 0) return;
-        if (now < roundEndsAt) return;
-
-        const at = Date.now();
-        const summary = buildSummary(at);
-
-        queueMicrotask(() => {
-            setHistory((prev) => [summary, ...prev].slice(0, 3));
-            resetRound(roundIndex + 1);
-        });
-    }, [joined, now, roundEndsAt, buildSummary, resetRound, roundIndex]);
-
-    const commitWord = useCallback(() => {
-        if (!joined) return;
-
-        const at = Date.now();
-        const typedWord = typed.trim().toLowerCase();
-        const target = current.toLowerCase();
-
-        const wordTotal = target.length;
-        const wordCorrectChars = countCorrectCharsForWord(target, typedWord);
-
-        const nextTotalChars = totalChars + wordTotal;
-        const nextCorrectChars = correctChars + wordCorrectChars;
-
-        const nextCompleted = completedWords + 1;
-        const isCorrect = typedWord === target;
-        const nextCorrectWords = correctWords + (isCorrect ? 1 : 0);
-
-        setTotalChars(nextTotalChars);
-        setCorrectChars(nextCorrectChars);
-        setAccuracy(clamp01(nextTotalChars === 0 ? 1 : nextCorrectChars / nextTotalChars));
-
-        setCompletedWords(nextCompleted);
-        setCorrectWords(nextCorrectWords);
-        setCorrectness(clamp01(nextCompleted === 0 ? 1 : nextCorrectWords / nextCompleted));
-
-        setWpm(computeWpm(nextCorrectWords, at));
-
-        setQueue((prev) => {
-            const shifted = prev.slice(1);
-            shifted.push(generateWordQueue(1)[0]!);
-            return shifted;
+        const s = io("http://localhost:3002", {
+            transports: ["websocket", "polling"],
         });
 
-        setTyped("");
-    }, [
-        joined,
-        typed,
-        current,
-        totalChars,
-        correctChars,
-        completedWords,
-        correctWords,
-        computeWpm,
-    ]);
+        socketRef.current = s;
 
-    const onJoin = useCallback(() => {
+        s.on("state", (next: ServerState) => {
+            setState(next);
+
+            if (lastRoundIdRef.current && lastRoundIdRef.current !== next.round.roundId) {
+                setTyped("");
+            }
+            lastRoundIdRef.current = next.round.roundId;
+        });
+
+        return () => {
+            s.disconnect();
+            socketRef.current = null;
+        };
+    }, []);
+
+    const join = () => {
         const n = name.trim();
         if (!n) return;
+
         setName(n);
         setJoined(true);
-        setHistory([]);
-        resetRound(0);
-    }, [name, resetRound]);
 
-    const disabled = !joined || (roundEndsAt !== 0 && now >= roundEndsAt);
+        const pid = getOrCreatePlayerId();
+        playerIdRef.current = pid;
+
+        socketRef.current?.emit("join", { playerId: pid, name: n });
+    };
+
+    const sendProgressDebounceRef = useRef<number | null>(null);
+    const sendProgress = (value: string) => {
+        setTyped(value);
+
+        if (!joined) return;
+
+        if (sendProgressDebounceRef.current) {
+            window.clearTimeout(sendProgressDebounceRef.current);
+        }
+
+        sendProgressDebounceRef.current = window.setTimeout(() => {
+            socketRef.current?.emit("progress", { typed: value });
+        }, 60);
+    };
+
+    const sentence = state?.round.sentence ?? "";
+    const players = state?.players ?? [];
+
+    const roundEndsAt = state?.round.roundEndsAt ?? 0;
+    const now = serverNow ?? fallbackNow;
+    const timeLeftMs = roundEndsAt - now;
+
+    const sentenceView = useMemo(() => {
+        const capped = typed.slice(0, sentence.length);
+        const nodes: React.ReactNode[] = [];
+
+        for (let i = 0; i < capped.length; i++) {
+            const s = sentence[i] ?? "";
+            const t = capped[i] ?? "";
+            const ok = s === t;
+
+            nodes.push(
+                <span
+                    key={i}
+                    className={ok ? "bg-emerald-500/15 rounded-sm" : "bg-red-500/15 rounded-sm"}
+                >
+          {s}
+        </span>
+            );
+        }
+
+        const rest = sentence.slice(capped.length);
+        if (rest) {
+            nodes.push(
+                <span key="rest" className="text-muted-foreground">
+          {rest}
+        </span>
+            );
+        }
+
+        return nodes;
+    }, [typed, sentence]);
+
+    const roundBadgeVariant = timeLeftMs > 0 ? "default" : "destructive";
 
     return (
         <main className="mx-auto max-w-4xl p-6 space-y-6" suppressHydrationWarning>
             <header className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
                     <h1 className="text-2xl font-semibold tracking-tight">Typing Race</h1>
-                    <p className="text-sm text-muted-foreground">
-                        Three-word conveyor. Commit with Space/Enter.
-                    </p>
+                    <p className="text-sm text-muted-foreground">Realtime sentence rounds</p>
                 </div>
-                <Countdown roundEndsAt={roundEndsAt} now={now} />
+                <Badge variant={roundBadgeVariant}>
+                    Round ends in {formatSeconds(timeLeftMs)}
+                </Badge>
             </header>
 
             {!joined ? (
                 <Card>
                     <CardHeader className="space-y-1">
                         <CardTitle className="text-base">Join</CardTitle>
-                        <CardDescription>Pick a name and start.</CardDescription>
+                        <CardDescription>Open another tab to test multiplayer.</CardDescription>
                     </CardHeader>
                     <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <Input
@@ -212,49 +185,82 @@ export default function Page() {
                             placeholder="Your name"
                             className="sm:max-w-xs"
                             onKeyDown={(e) => {
-                                if (e.key === "Enter") onJoin();
+                                if (e.key === "Enter") join();
                             }}
                         />
-                        <Button onClick={onJoin} disabled={!name.trim()}>
+                        <Button onClick={join} disabled={!name.trim()}>
                             Start
                         </Button>
                     </CardContent>
                 </Card>
             ) : (
-                <div
-                    onKeyDown={(e) => {
-                        if (disabled) return;
-                        if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            commitWord();
-                        }
-                    }}
-                >
-                    <GameCard
-                        current={current}
-                        next={next}
-                        next2={next2}
-                        typed={typed}
-                        onTypedChange={setTyped}
-                        onCommit={commitWord}
-                        disabled={disabled}
-                    />
-                </div>
+                <Card>
+                    <CardHeader className="space-y-1">
+                        <CardTitle className="text-base">Current sentence</CardTitle>
+                        <CardDescription>Type continuously. Stats update live in the table.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        <div className="rounded-md border bg-muted/30 p-4 font-mono text-sm leading-relaxed">
+                            {sentenceView}
+                        </div>
+                        <Input
+                            value={typed}
+                            onChange={(e) => sendProgress(e.target.value)}
+                            placeholder="Type here..."
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
+                            disabled={timeLeftMs <= 0}
+                        />
+                    </CardContent>
+                </Card>
             )}
 
-            <HistoryTables
-                items={history}
-                live={{
-                    roundNumber: roundIndex + 1,
-                    name,
-                    liveProgress: typed,
-                    correctWords,
-                    completedWords,
-                    correctness,
-                    accuracy,
-                    wpm,
-                }}
-            />
+            <Card>
+                <CardHeader className="flex flex-row items-start justify-between gap-4">
+                    <div>
+                        <CardTitle className="text-base">Players</CardTitle>
+                        <CardDescription>Live progress, WPM and accuracy</CardDescription>
+                    </div>
+                    <div className="text-right text-sm text-muted-foreground">
+                        Round: {(state?.round.roundIndex ?? 0) + 1}
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    <Table>
+                        <TableCaption>Updates are broadcast ~5x/sec.</TableCaption>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead className="w-[55%]">Live progress</TableHead>
+                                <TableHead className="w-[20%]">Player</TableHead>
+                                <TableHead className="text-right w-[12%]">WPM</TableHead>
+                                <TableHead className="text-right w-[13%]">Accuracy</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {players.map((p) => (
+                                <TableRow key={p.id} className={p.id === playerIdRef.current ? "bg-muted/40" : ""}>
+                                    <TableCell className="font-mono text-xs sm:text-sm">
+                                        {p.liveProgress || <span className="text-muted-foreground">—</span>}
+                                    </TableCell>
+                                    <TableCell className="font-medium">{p.name}</TableCell>
+                                    <TableCell className="text-right tabular-nums">{Math.round(p.wpm)}</TableCell>
+                                    <TableCell className="text-right tabular-nums">
+                                        {(p.accuracy * 100).toFixed(0)}%
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                            {players.length === 0 && (
+                                <TableRow>
+                                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                                        No players yet.
+                                    </TableCell>
+                                </TableRow>
+                            )}
+                        </TableBody>
+                    </Table>
+                </CardContent>
+            </Card>
         </main>
     );
 }
